@@ -113,7 +113,7 @@ patch_md() {
     "$f" && rm -f "${f}.bak"
 }
 PATCH_COUNT=0
-for f in "$AGENTS_DIR"/geo-*.md "$SKILLS_DIR"/geo-audit/SKILL.md; do
+for f in "$AGENTS_DIR"/geo-*.md "$SKILLS_DIR"/geo-*/SKILL.md; do
   [ -f "$f" ] || continue
   if grep -qE '__GEO_SCRIPTS__|__GEO_VENV_PY__' "$f"; then
     patch_md "$f"

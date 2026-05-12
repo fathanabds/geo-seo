@@ -56,7 +56,7 @@ Agent/skill markdown files reference the venv interpreter and scripts directory 
 - Use the **tilde form** (`~/.claude/...`), not `$HOME`. Claude Code's Bash expands `~` at command-execution time; this is intentional. Python shebangs are the exception — those get the absolute venv path because shebangs don't expand `~`.
 - If you add a new agent or skill file that needs to invoke the helper script, use the placeholders and add the file to the `for f in ...` loop in `install.sh` step 5 if it isn't already covered by the existing globs (`agents/geo-*.md`, `skills/geo-audit/SKILL.md`).
 
-Currently only [agents/geo-ai-visibility.md](agents/geo-ai-visibility.md) and [agents/geo-schema.md](agents/geo-schema.md) contain the placeholders — `grep -l '__GEO_SCRIPTS__\|__GEO_VENV_PY__'` to confirm.
+Currently [agents/geo-ai-visibility.md](agents/geo-ai-visibility.md), [agents/geo-schema.md](agents/geo-schema.md), and [agents/geo-fix-qa.md](agents/geo-fix-qa.md) contain the placeholders — `grep -l '__GEO_SCRIPTS__\|__GEO_VENV_PY__'` to confirm.
 
 ## Relationship to upstream
 

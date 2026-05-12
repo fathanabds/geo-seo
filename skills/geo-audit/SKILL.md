@@ -1,6 +1,6 @@
 ---
 name: geo-audit
-description: Full website GEO+SEO audit with parallel subagent delegation. Orchestrates a comprehensive Generative Engine Optimization audit across AI citability, platform analysis, technical infrastructure, content quality, and schema markup. Produces a composite GEO Score (0-100) with prioritized action plan.
+description: Full website GEO+SEO audit with parallel subagent delegation. Orchestrates a comprehensive Generative Engine Optimization audit across AI citability, platform analysis, technical infrastructure, content quality, and schema markup. Produces a composite GEO Score (0-100) with prioritized action plan. Accepts a URL OR runs with no argument from a project directory to auto-build and audit a local preview server (production build, not dev).
 allowed-tools:
   - Read
   - Grep
@@ -22,7 +22,57 @@ Traditional SEO optimizes for search engine rankings. GEO optimizes for AI citat
 
 ---
 
+## Invocation
+
+```
+/geo-audit https://example.com        # audit a remote URL (live or staging)
+/geo-audit                            # auto-preview: build the project in CWD and audit its local server
+/geo-audit http://localhost:4188      # audit an already-running local server (no auto-build)
+```
+
+---
+
 ## Audit Workflow
+
+### Phase 0: URL Resolution
+
+Decide which URL to audit before anything else:
+
+1. **URL passed explicitly** (any `http://` or `https://` argument) → use it directly. Skip auto-preview entirely. Proceed to Phase 1.
+2. **No URL passed AND `package.json` exists in CWD** → enter **Auto-Preview Mode** (below). Build the project, start a local production preview, and set the audit URL to `http://localhost:4188`.
+3. **No URL passed AND no `package.json`** → exit with: `No URL given and no project detected in CWD. Pass a URL or run from a project root.`
+
+### Auto-Preview Mode
+
+The goal is to audit the **production build served locally** — not the dev server. Dev builds differ in ways that affect GEO scoring (source maps, HMR script injection, SSR optimizations disabled).
+
+**Step A: Detect framework** from `package.json`:
+
+| Framework | Detection | Build | Serve | Default port |
+|---|---|---|---|---|
+| Next.js | `dependencies.next` | `npm run build` | `npm run start -- -p 4188` | 4188 |
+| Nuxt 3 | `dependencies.nuxt` | `npm run build` | `npm run preview -- --port 4188` | 4188 |
+| Astro | `dependencies.astro` | `npm run build` | `npm run preview -- --port 4188` | 4188 |
+| SvelteKit | `dependencies.@sveltejs/kit` | `npm run build` | `npm run preview -- --port 4188` | 4188 |
+| Vite + React | `dependencies.vite` + `dependencies.react` | `npm run build` | `npx --yes http-server dist -p 4188 -s` | 4188 |
+| Plain HTML | No framework deps | (skip) | `npx --yes http-server . -p 4188 -s` | 4188 |
+| Unknown | — | `npm run build` if `scripts.build` exists, else skip | `npx --yes http-server <out-dir> -p 4188 -s` | 4188 |
+
+Use the lockfile to pick the right package manager: `pnpm-lock.yaml` → `pnpm`, `yarn.lock` → `yarn`, `bun.lockb` → `bun`, else `npm`.
+
+**Step B: Port collision check.** If something is already listening on `:4188`:
+- If it responds with a 200 to `GET /` → assume it's our own preview from a previous run, use it as-is, do NOT rebuild or restart.
+- If it responds with anything else (or unknown server) → pick the next free port (4189, 4190, ...) up to 4199.
+
+**Step C: Build.** Run the build command from CWD. Capture output. On non-zero exit, surface the build error and abort the audit — auditing a broken build is meaningless.
+
+**Step D: Start preview in background.** Spawn the serve command with output redirected to a log file. Capture PID. Register a cleanup hook to kill PID on exit (success or failure).
+
+**Step E: Wait for ready.** Poll `http://localhost:<port>/` for up to 15 seconds. If no 200 response within that window, kill the PID and abort with: `Preview server failed to start. Check build output.`
+
+**Step F: Set `audit_url = http://localhost:<port>`** and proceed to Phase 1.
+
+**Step G (on completion):** Kill the preview server PID. Use `kill -TERM` then `kill -KILL` after 2s. Delete the log file.
 
 ### Phase 1: Discovery and Reconnaissance
 
