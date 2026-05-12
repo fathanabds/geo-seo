@@ -1,13 +1,18 @@
-# GEO Audit Skill Bundle
+# GEO Audit + Fix Skill Bundle
 
-A minimal, portable bundle of the GEO audit skill — extracted from [zubair-trabzada/geo-seo-claude](https://github.com/zubair-trabzada/geo-seo-claude), trimmed to just the pieces needed to run `/geo-audit <url>` end-to-end.
+A focused bundle of GEO skills — extracted from [zubair-trabzada/geo-seo-claude](https://github.com/zubair-trabzada/geo-seo-claude). Runs the full `/geo-audit <url>` workflow end-to-end, plus 4 generator skills that turn audit findings into actual fixes.
 
 ## What's included
 
-- **1 orchestrator skill** — `skills/geo-audit/SKILL.md`, the user-callable command
+- **1 audit orchestrator** — `skills/geo-audit/SKILL.md`, the user-callable command that runs the audit
 - **5 analysis agents** — `agents/geo-*.md`, spawned in parallel by the orchestrator
-- **1 helper script** — `skills/geo/scripts/fetch_page.py`, for richer HTML parsing (used by `geo-schema`)
-- **6 JSON-LD templates** — `skills/geo/schema/*.json` (Organization, LocalBusiness, Product, SoftwareApplication, Article+Person, WebSite) — reference material when implementing audit fixes
+- **4 fix-generator skills** — produce concrete artifacts you can paste into a site:
+  - `skills/geo-llmstxt/` — generates a complete `llms.txt` file
+  - `skills/geo-schema/` — generates JSON-LD markup snippets
+  - `skills/geo-citability/` — returns specific rewrite suggestions for low-citability content
+  - `skills/geo-platform-optimizer/` — platform-specific recommendations (AIO / ChatGPT / Perplexity / Gemini / Bing)
+- **1 helper script** — `skills/geo/scripts/fetch_page.py`, HTML fetcher used by `geo-schema`
+- **6 JSON-LD templates** — `skills/geo/schema/*.json` (Organization, LocalBusiness, Product, SoftwareApplication, Article+Person, WebSite)
 - **Python dependencies** — `skills/geo/requirements.txt` (`requests`, `beautifulsoup4`, `lxml`)
 - **Installer** — `install.sh` handles copy + venv + path patching
 
@@ -15,19 +20,21 @@ A minimal, portable bundle of the GEO audit skill — extracted from [zubair-tra
 
 ```
 skills/
-├── agents/                          ← lands in ~/.claude/agents/
-│   ├── geo-ai-visibility.md         (citability + crawlers + brand + llms.txt)
-│   ├── geo-content.md               (E-E-A-T)
-│   ├── geo-platform-analysis.md     (AIO / ChatGPT / Perplexity / Gemini / Bing)
-│   ├── geo-schema.md                (structured data)
-│   └── geo-technical.md             (robots, headers, SSR, security)
-├── skills/                          ← lands in ~/.claude/skills/
-│   ├── geo-audit/
-│   │   └── SKILL.md                 (the orchestrator — triggered by /geo-audit)
+├── agents/                              ← lands in ~/.claude/agents/
+│   ├── geo-ai-visibility.md             (citability + crawlers + brand + llms.txt)
+│   ├── geo-content.md                   (E-E-A-T)
+│   ├── geo-platform-analysis.md         (AIO / ChatGPT / Perplexity / Gemini / Bing)
+│   ├── geo-schema.md                    (structured data)
+│   └── geo-technical.md                 (robots, headers, SSR, security)
+├── skills/                              ← lands in ~/.claude/skills/
+│   ├── geo-audit/SKILL.md               (orchestrator — triggered by /geo-audit)
+│   ├── geo-llmstxt/SKILL.md             (fix: generate llms.txt)
+│   ├── geo-schema/SKILL.md              (fix: generate JSON-LD)
+│   ├── geo-citability/SKILL.md          (fix: rewrite low-citability content)
+│   ├── geo-platform-optimizer/SKILL.md  (fix: per-platform recommendations)
 │   └── geo/
-│       ├── scripts/
-│       │   └── fetch_page.py        (HTML fetcher with SSR detection)
-│       ├── schema/                  (6 JSON-LD templates — Organization, Product, etc.)
+│       ├── scripts/fetch_page.py        (HTML fetcher with SSR detection)
+│       ├── schema/                      (6 JSON-LD templates)
 │       └── requirements.txt
 ├── install.sh
 └── README.md  (this file)
@@ -35,7 +42,7 @@ skills/
 
 ## Install
 
-Installs globally into `~/.claude/`, so the skill is available in every project — no per-repo setup.
+Installs globally into `~/.claude/`, so the skills are available in every project — no per-repo setup.
 
 ```bash
 curl -sSL https://raw.githubusercontent.com/fathanabds/geo-seo/main/install.sh | bash
@@ -50,13 +57,26 @@ The script clones this repo to a temp dir, then:
 5. Patches script shebangs + markdown placeholders to point at the new venv
 6. Cleans up the temp dir on exit
 
-Then open Claude Code in any project and run:
+## Workflow: audit → fix
+
+**Step 1 — run the audit.** Open Claude Code in the target project and run:
 
 ```
 /geo-audit https://example.com
 ```
 
-The audit writes `GEO-AUDIT-REPORT.md` to the current working directory.
+The audit writes `GEO-AUDIT-REPORT.md` with a composite GEO Score (0-100), critical/high/medium/low issues, and a 30-day action plan.
+
+**Step 2 — fix the findings.** For each issue category in the report, invoke the matching generator skill:
+
+| Audit finding | Fix skill |
+|---|---|
+| Missing or weak `llms.txt` | `/geo-llmstxt` — generates a complete file from the site |
+| Missing or invalid schema markup | `/geo-schema` — generates JSON-LD snippets to paste into pages |
+| Low-citability content passages | `/geo-citability` — returns specific rewrite suggestions |
+| Platform-specific gaps (AIO / ChatGPT / etc.) | `/geo-platform-optimizer` — targeted recommendations per platform |
+
+Each fix skill produces a concrete artifact (file content, code snippet, or rewrite) — not just analysis.
 
 ## What `/geo-audit <url>` does
 
@@ -70,13 +90,17 @@ The audit writes `GEO-AUDIT-REPORT.md` to the current working directory.
 
 ## What's NOT in this bundle (and why)
 
-The upstream skill ships 15 sub-skills (`geo-citability`, `geo-crawlers`, `geo-llmstxt`, `geo-brand-mentions`, `geo-platform-optimizer`, `geo-content`, `geo-schema`, `geo-technical`, plus business-tier ones like `geo-report-pdf`, `geo-proposal`, `geo-compare`, `geo-prospect`). They're useful but not needed for `/geo-audit` to work — the 5 agents in this bundle cover the same domain.
+The upstream skill ships 15 sub-skills. This bundle includes the 10 you need for audit + remediation. The 5 omitted:
+
+- `geo-crawlers`, `geo-brand-mentions`, `geo-content`, `geo-technical` — analysis-only, fully covered by the 5 audit agents
+- `geo-report-pdf`, `geo-proposal`, `geo-compare`, `geo-prospect`, `geo-report`, `geo-update` — business/agency tooling (PDF reports, proposals, monthly compares, CRM)
 
 If you want any of them, install from upstream:
+
 ```bash
 bash <(curl -sSL https://raw.githubusercontent.com/zubair-trabzada/geo-seo-claude/main/install.sh)
 ```
 
 ## Updating
 
-This bundle is a snapshot. If the upstream agents/orchestrator change, re-extract and re-run `install.sh`.
+This bundle is a snapshot. If upstream changes, re-run the install command above — it always pulls the latest from `main`.
