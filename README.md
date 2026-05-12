@@ -4,6 +4,7 @@ A focused bundle of GEO skills — extracted from [zubair-trabzada/geo-seo-claud
 
 ## What's included
 
+- **1 umbrella entry point** — `skills/geo/SKILL.md`, the discovery doc (`/geo`) that routes users to the right sub-skill based on their goal
 - **1 audit orchestrator** — `skills/geo-audit/SKILL.md`, the user-callable command that runs the audit
 - **5 analysis agents** — `agents/geo-*.md`, spawned in parallel by the orchestrator
 - **4 fix-generator skills** — produce concrete artifacts you can paste into a site:
@@ -33,6 +34,7 @@ skills/
 │   ├── geo-citability/SKILL.md          (fix: rewrite low-citability content)
 │   ├── geo-platform-optimizer/SKILL.md  (fix: per-platform recommendations)
 │   └── geo/
+│       ├── SKILL.md                     (umbrella entry point — /geo)
 │       ├── scripts/fetch_page.py        (HTML fetcher with SSR detection)
 │       ├── schema/                      (6 JSON-LD templates)
 │       └── requirements.txt
@@ -58,6 +60,8 @@ The script clones this repo to a temp dir, then:
 6. Cleans up the temp dir on exit
 
 ## Workflow: audit → fix
+
+Not sure where to start? Invoke `/geo` — the umbrella skill is a discovery doc that explains the toolkit and points you at the right sub-command.
 
 **Step 1 — run the audit.** Open Claude Code in the target project and run:
 
