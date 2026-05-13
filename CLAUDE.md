@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What this repo is
 
-A distribution bundle, not an application. It packages a Claude Code skill (`/geo-audit`) plus its supporting agents and helper script, and installs them globally into `~/.claude/` so they're available in any project. There is no build, no test suite, and no runtime in this repo itself — the artifacts execute inside Claude Code on the end user's machine after `install.sh` runs.
+A distribution bundle, not an application. It packages two Claude Code skills (`/geo-audit` and `/geo-fix`) plus their supporting agents and helper script, and installs them globally into `~/.claude/` so they're available in any project. There is no build, no test suite, and no runtime in this repo itself — the artifacts execute inside Claude Code on the end user's machine after `install.sh` runs.
 
 ## Install / smoke test
 
@@ -29,7 +29,7 @@ A distribution bundle, not an application. It packages a Claude Code skill (`/ge
 # Output is written to GEO-AUDIT-REPORT.md in the user's CWD.
 ```
 
-There is nothing to `npm test` or `pytest` — validate changes by re-running `install.sh` and exercising `/geo-audit` against a known URL.
+There is nothing to `npm test` or `pytest` — validate changes by re-running `install.sh` and exercising `/geo-audit` (and optionally `/geo-fix`) against a known URL or local project.
 
 ## Architecture: how `/geo-audit` actually runs
 
@@ -60,7 +60,14 @@ Currently [agents/geo-ai-visibility.md](agents/geo-ai-visibility.md), [agents/ge
 
 ## Relationship to upstream
 
-This is a trimmed snapshot of [zubair-trabzada/geo-seo-claude](https://github.com/zubair-trabzada/geo-seo-claude). Upstream ships ~15 sub-skills; this bundle keeps only what `/geo-audit` needs end-to-end. If a change here is mainly about pulling in upstream improvements, re-extract rather than hand-merging — the bundle is meant to be a snapshot, not a fork.
+`/geo-audit` started as a trimmed snapshot of [zubair-trabzada/geo-seo-claude](https://github.com/zubair-trabzada/geo-seo-claude) — upstream ships ~15 sub-skills, this bundle kept only what the audit needs end-to-end and dropped the standalone generator skills (`geo-citability`, `geo-llmstxt`, `geo-platform-optimizer`, `geo-schema`) since their scoring logic is duplicated inline in the audit agents. **However, the audit is no longer a pure snapshot.** Local additions in [skills/geo-audit/SKILL.md](skills/geo-audit/SKILL.md):
+
+- **Phase 0 — URL Resolution + Auto-Preview Mode.** When invoked without a URL, the audit detects the framework (Next.js app/pages, Nuxt, Astro, SvelteKit, Vite+React, plain HTML), builds the project, starts a local preview server, and audits the rendered HTML. Lets users audit their local production build instead of a deployed URL.
+- **Pre-build safety check.** Before running any build command, scans `package.json` scripts (transitively, depth ≤ 3) for risky verbs (`deploy`, `publish`, `upload`, `push`, `release`, `sync`, etc.) and tool patterns (`vercel deploy`, `netlify deploy`, `firebase deploy`, `npm publish`, `gh release`, etc.). Refuses unless `GEO_FIX_ALLOW_RISKY_BUILD=1` is set. Prevents accidentally deploying the user's project during an audit.
+
+If you re-extract from upstream to pull in scoring/agent improvements, you MUST preserve Phase 0 and the safety check — a naive `cp -R` from upstream will silently delete them. Diff first, then port upstream changes section-by-section into the existing SKILL.md.
+
+`/geo-fix` is custom to this repo — it has no upstream. The fix loop (skill + `geo-fix-triage` agent + `geo-fix-qa` agent) was built here to consume `GEO-AUDIT-REPORT.md` and apply framework-aware remediations with a render-verification QA gate. Edit it freely; no re-extraction concern.
 
 The canonical remote that `install.sh` clones from (when run via `curl | bash`) is `https://github.com/fathanabds/geo-seo.git` — see `REPO_URL` in [install.sh](install.sh). Pushes to `main` on that repo are what end users actually pull.
 

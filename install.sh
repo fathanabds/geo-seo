@@ -79,8 +79,13 @@ mkdir -p "$AGENTS_DIR"
 cp "$BUNDLE_DIR/agents/"*.md "$AGENTS_DIR/"
 echo "✓ Agents copied to $AGENTS_DIR ($(ls "$AGENTS_DIR" | wc -l | tr -d ' ') files)"
 
-# --- 2. Copy skills (geo-audit orchestrator + geo helper skill with scripts) ---
+# --- 2. Copy skills (geo-audit orchestrator + geo-fix loop + geo helper skill with scripts) ---
 mkdir -p "$SKILLS_DIR"
+# Remove deprecated standalone generator skills if they exist from a prior install.
+# These were dropped — their scoring logic now lives inline in the audit agents.
+for legacy in geo-citability geo-llmstxt geo-platform-optimizer geo-schema; do
+  rm -rf "$SKILLS_DIR/$legacy"
+done
 cp -R "$BUNDLE_DIR/skills/"* "$SKILLS_DIR/"
 echo "✓ Skills copied to $SKILLS_DIR"
 

@@ -95,6 +95,65 @@ Anything that involves factual claims, prose rewriting, or human judgment:
 
 For each `review` item, still produce a **proposed change location** so the human reviewer knows where it would go.
 
+**Sub-classify every REVIEW item as either `review:interactive` or `review:offline`.** The orchestrator's Phase 8 will run an interactive Q&A session for `review:interactive` items; `review:offline` items are listed for the user to address manually.
+
+A REVIEW item is `review:interactive` if **all** of these are true:
+1. The required information is a **short factual value** the user is likely to know off the top of their head, or can grab from a single readily-available source (their LinkedIn URL, a price, an address). Specifically: URLs, dates, prices, phone numbers, email addresses, postal addresses, short titles/roles (≤ 10 words), short names.
+2. The answer maps to a **specific JSON-LD field or attribute** — not free-form prose.
+3. Applying the answer requires **no authoring of new prose longer than ~30 words**.
+
+Everything else is `review:offline` — flag it for the user but do not generate questions.
+
+**Interactive-eligible review categories:**
+
+| Sub-category | Field(s) the user provides | Bucket |
+|---|---|---|
+| Organization missing scalar fields | `foundingDate`, `email`, `telephone`, `numberOfEmployees`, `address` (PostalAddress) | `review:interactive` |
+| Organization empty `sameAs` | URLs (one per entity) | `review:interactive` |
+| Person basic fields (existing Person node) | `jobTitle`, `sameAs` URLs | `review:interactive` |
+| Offer.price placeholder (e.g., `"TODO"`) | price number + currency | `review:interactive` |
+| LocalBusiness factual fields | `address`, `telephone`, `openingHours` | `review:interactive` |
+| Canonical URL ambiguity (cross-domain) | the canonical URL | `review:interactive` |
+| Image alt text — short context-dependent description | alt text string (≤ 15 words) | `review:interactive` |
+
+**Always-offline review categories:**
+
+| Sub-category | Why offline | Bucket |
+|---|---|---|
+| Author bios > 30 words, full Person schema with description | Prose authoring | `review:offline` |
+| Article content rewrites for E-E-A-T | Prose authoring | `review:offline` |
+| Citability passage rewrites | Prose authoring | `review:offline` |
+| Meta description (when it requires new prose) | Prose authoring | `review:offline` |
+| New page creation (About, FAQ, Contact) | Architectural + prose | `review:offline` |
+
+### Step 3a: Generate Question Templates for `review:interactive` Items
+
+For each `review:interactive` finding, produce a **question template** that Phase 8 will use to prompt the user. The template must include:
+
+- `question` — the prompt text shown to the user, written conversationally
+- `field_path` — JSON path (or attribute path) where the answer lands in the target file
+- `validator` — the answer type for parsing: `url`, `url_list`, `email`, `phone`, `date_yyyy`, `address`, `price_currency`, `string_short`, `string_alt`
+- `target_file` — same as for auto items (use the framework table)
+- `entity` — the JSON-LD entity the question applies to (e.g., `Organization`, `Person[name="Jane Doe"]`, `Product[name="Premium Plan"]`), used to batch questions per entity
+
+**Standard question templates per sub-category:**
+
+| Sub-category | Question(s) (one per missing field) | Validator |
+|---|---|---|
+| Organization `foundingDate` | "Founding year of [Org name]?" | `date_yyyy` |
+| Organization `email` | "Primary contact email for [Org name]?" | `email` |
+| Organization `telephone` | "Primary contact phone for [Org name] (E.164 format, e.g., +1-555-0100)?" | `phone` |
+| Organization `address` | "Headquarters address for [Org name] (street, city, region, postal code, country)?" | `address` |
+| Organization `numberOfEmployees` | "Approximate number of employees at [Org name]?" | `string_short` |
+| Organization / Person `sameAs` | "Paste profile/social URLs for [entity name], one per line. Examples: LinkedIn, X/Twitter, Wikipedia, GitHub. (Or 'skip' to leave empty.)" | `url_list` |
+| Person `jobTitle` | "Job title or role for [Person name]?" | `string_short` |
+| Offer `price` placeholder | "Price for [Product name]? Format: number + ISO currency code (e.g., '29.00 USD'). Or 'remove' to delete the Offer node." | `price_currency` |
+| LocalBusiness `openingHours` | "Opening hours for [LocalBusiness name]? Format: `Mo-Fr 09:00-17:00` (schema.org openingHours format)." | `string_short` |
+| Canonical URL | "Canonical URL for [route]? (The single authoritative URL this page should be indexed as.)" | `url` |
+| Image alt text (short) | "Alt text for image at [path] (≤ 15 words describing the image content)?" | `string_alt` |
+
+**Batching guidance for the orchestrator:** group questions by `entity`. For an Organization with 3 missing fields, that's one batch of 3 questions. For 4 authors each missing `sameAs`, that's 4 batches of 1 question each (one per Person). The orchestrator never asks more than 4 questions in a single batch.
+
 #### SKIP bucket — off-site or non-actionable
 
 - All `off-site` category items (Wikipedia, Reddit, YouTube, LinkedIn presence)
@@ -202,24 +261,25 @@ Write `GEO-FIX-PLAN.md` to `<project_path>/GEO-FIX-PLAN.md`. Format:
 | Bucket | Count |
 |---|---|
 | AUTO | [N] |
-| REVIEW | [N] |
+| REVIEW:INTERACTIVE | [N] |
+| REVIEW:OFFLINE | [N] |
 | SKIP | [N] |
 | **Total findings** | [N] |
 
-| Category | AUTO | REVIEW | SKIP |
-|---|---|---|---|
-| llms-txt | [N] | [N] | [N] |
-| robots-txt | [N] | [N] | [N] |
-| schema-static | [N] | [N] | [N] |
-| schema-content | [N] | [N] | [N] |
-| schema-cleanup | [N] | [N] | [N] |
-| meta-tags | [N] | [N] | [N] |
-| alt-text | [N] | [N] | [N] |
-| headings | [N] | [N] | [N] |
-| content-rewrite | [N] | [N] | [N] |
-| new-page | [N] | [N] | [N] |
-| off-site | [N] | [N] | [N] |
-| architectural | [N] | [N] | [N] |
+| Category | AUTO | REVIEW:INT | REVIEW:OFF | SKIP |
+|---|---|---|---|---|
+| llms-txt | [N] | [N] | [N] | [N] |
+| robots-txt | [N] | [N] | [N] | [N] |
+| schema-static | [N] | [N] | [N] | [N] |
+| schema-content | [N] | [N] | [N] | [N] |
+| schema-cleanup | [N] | [N] | [N] | [N] |
+| meta-tags | [N] | [N] | [N] | [N] |
+| alt-text | [N] | [N] | [N] | [N] |
+| headings | [N] | [N] | [N] | [N] |
+| content-rewrite | [N] | [N] | [N] | [N] |
+| new-page | [N] | [N] | [N] | [N] |
+| off-site | [N] | [N] | [N] | [N] |
+| architectural | [N] | [N] | [N] | [N] |
 
 ---
 
@@ -288,12 +348,55 @@ Sitemap: [sitemap URL from report]
 
 ## REVIEW Fixes
 
-### content-rewrite
+Items are split into `review:interactive` (Phase 8 Q&A) and `review:offline` (manual work).
 
-#### [review-1] Rewrite author bio on /about
+### REVIEW:INTERACTIVE — Phase 8 Q&A items
+
+#### [int-1] Organization missing scalar fields
 
 **Source finding:** [quote]
-**Why review:** Asserts factual claims about a real person.
+**Entity:** `Organization` (single node)
+**Target file:** `app/layout.tsx` (modify existing Organization JSON-LD block — locate by `id="ld-organization"` or by `"@type":"Organization"`)
+**Questions:**
+
+| # | Question | field_path | Validator |
+|---|---|---|---|
+| 1 | Founding year of Roulin? | `foundingDate` | `date_yyyy` |
+| 2 | Primary contact email for Roulin? | `email` | `email` |
+| 3 | Headquarters address for Roulin (street, city, region, postal code, country)? | `address` | `address` |
+
+**Notes:** Questions for the same entity are presented in a single batch. The user may answer, skip per field, or stop the Phase 8 session.
+
+#### [int-2] Empty sameAs on Organization
+
+**Source finding:** [quote]
+**Entity:** `Organization`
+**Target file:** `app/layout.tsx`
+**Questions:**
+
+| # | Question | field_path | Validator |
+|---|---|---|---|
+| 1 | Paste profile/social URLs for Roulin, one per line. Examples: LinkedIn, X/Twitter, Wikipedia. (Or 'skip' to leave empty.) | `sameAs` | `url_list` |
+
+#### [int-3] Offer.price placeholder for Product "Premium Plan"
+
+**Source finding:** [quote]
+**Entity:** `Product[name="Premium Plan"] > Offer`
+**Target file:** `app/pricing/page.tsx` (locate by `"@type":"Offer"` near `"name":"Premium Plan"`)
+**Questions:**
+
+| # | Question | field_path | Validator |
+|---|---|---|---|
+| 1 | Price for "Premium Plan"? Format: number + ISO currency code (e.g., '29.00 USD'). Or 'remove' to delete the Offer node. | `Offer.price` + `Offer.priceCurrency` | `price_currency` |
+
+[... continue for each `review:interactive` item, one section per entity batch ...]
+
+### REVIEW:OFFLINE — manual work
+
+#### [off-1] Rewrite author bio on /about
+
+**Source finding:** [quote]
+**Why offline:** Asserts factual claims about a real person and requires prose > 30 words.
 **Proposed location:** `app/about/page.tsx`
 **Recommendation:** [the auditor's suggestion verbatim]
 

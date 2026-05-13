@@ -23,11 +23,8 @@ allowed-tools: Read, Grep, Glob, Bash, WebFetch, Write
 
 | Command | What It Does |
 |---------|-------------|
-| `/geo audit <url>` | Full GEO + SEO audit with parallel subagents |
-| `/geo citability <url>` | Score content for AI citation readiness |
-| `/geo llmstxt <url>` | Analyze or generate llms.txt file |
-| `/geo platforms <url>` | Platform-specific optimization (ChatGPT, Perplexity, Google AIO) |
-| `/geo schema <url>` | Detect, validate, and generate structured data |
+| `/geo-audit [<url>]` | Full GEO + SEO audit with parallel subagents. No URL → auto-build + audit local preview. |
+| `/geo-fix` | Closed-loop remediation: triage `GEO-AUDIT-REPORT.md`, apply safe auto-fixes, QA, re-audit, loop. |
 
 ---
 
@@ -50,7 +47,7 @@ allowed-tools: Read, Grep, Glob, Bash, WebFetch, Write
 
 ## Orchestration Logic
 
-### Full Audit (`/geo audit <url>`)
+### Full Audit (`/geo-audit [<url>]`)
 
 **Phase 1: Discovery (Sequential)**
 1. Fetch homepage HTML (curl or WebFetch)
@@ -104,41 +101,38 @@ Adjust recommendations based on detected type. Local businesses need LocalBusine
 
 ---
 
-## Sub-Skills (5 Specialized Components)
+## Skills
 
-| # | Skill | Directory | Purpose |
-|---|-------|-----------|---------|
-| 1 | geo-audit | `skills/geo-audit/` | Full audit orchestration and scoring |
-| 2 | geo-citability | `skills/geo-citability/` | Passage-level AI citation readiness |
-| 3 | geo-llmstxt | `skills/geo-llmstxt/` | llms.txt standard analysis and generation |
-| 4 | geo-platform-optimizer | `skills/geo-platform-optimizer/` | Platform-specific AI search optimization |
-| 5 | geo-schema | `skills/geo-schema/` | Structured data for AI discoverability |
+| Skill | Directory | Purpose |
+|-------|-----------|---------|
+| geo-audit | `skills/geo-audit/` | Full audit orchestration and scoring (user-callable: `/geo-audit`) |
+| geo-fix | `skills/geo-fix/` | Closed-loop remediation: triage → apply → QA → re-audit (user-callable: `/geo-fix`) |
+| geo | `skills/geo/` | Helper assets (this discovery doc, `fetch_page.py`, JSON-LD templates) |
 
 ---
 
-## Subagents (5 Parallel Workers)
+## Subagents
 
-| Agent | File | Skills Used |
-|-------|------|-------------|
-| geo-ai-visibility | `agents/geo-ai-visibility.md` | geo-citability, geo-crawlers, geo-llmstxt, geo-brand-mentions |
-| geo-platform-analysis | `agents/geo-platform-analysis.md` | geo-platform-optimizer |
-| geo-technical | `agents/geo-technical.md` | geo-technical |
-| geo-content | `agents/geo-content.md` | geo-content |
-| geo-schema | `agents/geo-schema.md` | geo-schema |
+The audit spawns 5 analysis agents in parallel. The fix loop uses 2 additional agents.
+
+| Agent | File | Role |
+|-------|------|------|
+| geo-ai-visibility | `agents/geo-ai-visibility.md` | Audit: citability, AI crawlers, llms.txt, brand mentions |
+| geo-platform-analysis | `agents/geo-platform-analysis.md` | Audit: platform-specific (AIO / ChatGPT / Perplexity / Gemini / Bing) |
+| geo-technical | `agents/geo-technical.md` | Audit: technical SEO, Core Web Vitals, crawlability |
+| geo-content | `agents/geo-content.md` | Audit: E-E-A-T, readability |
+| geo-schema | `agents/geo-schema.md` | Audit: structured data |
+| geo-fix-triage | `agents/geo-fix-triage.md` | Fix loop: classify findings into auto/review/skip + resolve file targets |
+| geo-fix-qa | `agents/geo-fix-qa.md` | Fix loop: build + smoke + render verification |
 
 ---
 
 ## Output Files
 
-All commands generate structured output:
-
-| Command | Output File |
-|---------|------------|
-| `/geo audit` | `GEO-AUDIT-REPORT.md` |
-| `/geo citability` | `GEO-CITABILITY-SCORE.md` |
-| `/geo llmstxt` | `llms.txt` (ready to deploy) |
-| `/geo platforms` | `GEO-PLATFORM-OPTIMIZATION.md` |
-| `/geo schema` | `GEO-SCHEMA-REPORT.md` + generated JSON-LD |
+| Command | Output |
+|---------|--------|
+| `/geo-audit` | `GEO-AUDIT-REPORT.md` in the project's working directory |
+| `/geo-fix` | Commits on a `chore/geo-fix` branch + `GEO-FIX-PLAN.md`, `GEO-QA-REPORT.md`, and refreshed `GEO-AUDIT-REPORT.md` per cycle |
 
 ---
 
@@ -155,12 +149,12 @@ All commands generate structured output:
 ## Quick Start Examples
 
 ```
-# Full GEO audit of a website
-/geo audit https://example.com
+# Audit a live URL
+/geo-audit https://example.com
 
-# Score a specific page for AI citability
-/geo citability https://example.com/blog/best-article
+# Audit your local production build (auto-detects framework, builds, serves, audits)
+/geo-audit
 
-# Generate an llms.txt file for your site
-/geo llmstxt https://example.com
+# After audit: apply safe auto-fixes, re-audit, loop until done
+/geo-fix
 ```

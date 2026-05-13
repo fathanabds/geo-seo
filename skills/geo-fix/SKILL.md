@@ -1,6 +1,6 @@
 ---
 name: geo-fix
-description: Closed-loop GEO remediation. Consumes a GEO-AUDIT-REPORT.md, triages findings into auto/review/skip buckets, applies framework-aware fixes to the target frontend repo, runs a build + Playwright smoke + render-verification QA gate, re-audits, and writes a score-delta diff. Loops until no auto fixes remain or scores plateau. Works on any project — Next.js, Vite/React, Astro, Nuxt, SvelteKit, plain HTML.
+description: Closed-loop GEO remediation. Consumes a GEO-AUDIT-REPORT.md, triages findings into auto/review/skip buckets (review further split into interactive vs offline), applies framework-aware auto-fixes, runs a build + Playwright smoke + render-verification QA gate, re-audits, writes a score-delta diff. Loops until no auto fixes remain or scores plateau, then walks the user through an opt-in Q&A for interactive-review items (missing schema fields, sameAs URLs, Offer prices, addresses). Works on any project — Next.js, Vite/React, Astro, Nuxt, SvelteKit, plain HTML.
 allowed-tools:
   - Read
   - Edit
@@ -9,6 +9,7 @@ allowed-tools:
   - Glob
   - Bash
   - WebFetch
+  - AskUserQuestion
 ---
 
 # GEO Fix Orchestration Skill
@@ -42,6 +43,7 @@ You can also audit a live URL directly (`/geo-audit https://...`) if you don't h
 /geo-fix --report <path> --project <path>   # explicit override
 /geo-fix --dry-run                          # triage only — produces GEO-FIX-PLAN.md, no edits
 /geo-fix --max-cycles <N>                   # default 3, hard cap 5
+/geo-fix --no-interactive                   # skip Phase 8 Q&A entirely
 ```
 
 If the report doesn't exist at the resolved path, stop and tell the user to run `/geo-audit` first.
@@ -51,7 +53,9 @@ If the report doesn't exist at the resolved path, stop and tell the user to run 
 ## The Loop
 
 ```
-discover → triage → detect framework → apply (auto) → QA gate → re-audit → diff → terminate or loop
+discover → triage → detect framework → apply (auto) → QA gate → re-audit → diff → loop
+                                                                              ↓
+                                                          terminate → interactive review (Q&A) → final summary
 ```
 
 Each cycle writes artifacts to the project root:
@@ -59,10 +63,11 @@ Each cycle writes artifacts to the project root:
 | File | Written by | Purpose |
 |---|---|---|
 | `GEO-AUDIT-REPORT.md` | `/geo-audit` (Phase 0, input) | Findings to fix |
-| `GEO-FIX-PLAN.md` | Phase 2 (triage) | Bucketed plan with file targets |
+| `GEO-FIX-PLAN.md` | Phase 2 (triage) | Bucketed plan with file targets and interactive question templates |
 | `GEO-FIX-LOG.md` | Phase 4 (apply) | What was changed per category |
 | `GEO-QA-REPORT.md` | Phase 5 (QA gate) | Build/smoke/render results |
 | `GEO-AUDIT-DIFF.md` | Phase 7 (diff) | Score deltas, fixes landed, fixes deferred |
+| `GEO-INTERACTIVE-LOG.md` | Phase 8 (Q&A) | Per-question answers, skips, applied changes, QA results |
 
 ---
 
@@ -164,6 +169,8 @@ The agent returns a `GEO-FIX-PLAN.md` with each finding bucketed into `auto`, `r
 7. Image alt text where context is ambiguous
 8. Any JSON-LD asserting dates, prices, ratings, or other facts the agent can't verify
 
+The triage agent further sub-classifies REVIEW into `review:interactive` (short factual answers — Phase 8 walks the user through a Q&A) and `review:offline` (prose / strategy — user handles manually). See [../../agents/geo-fix-triage.md](../../agents/geo-fix-triage.md) for the full sub-classification rules and question templates.
+
 #### SKIP — off-site or not actionable in this repo
 1. Wikipedia article creation
 2. Reddit / YouTube / LinkedIn presence
@@ -234,14 +241,147 @@ Write `GEO-AUDIT-DIFF.md` comparing the previous and new reports:
 
 Otherwise, loop back to Phase 2.
 
-### Phase 8 — Final summary
+### Phase 8 — Interactive review (Q&A for `review:interactive` items)
 
-After the loop terminates, print:
-- Cycles run
-- Baseline → final GEO Score
+After the auto loop has terminated, walk the user through the `review:interactive` items so factual gaps (founding year, sameAs URLs, prices, addresses, etc.) can be filled in without leaving the session.
+
+**Skip Phase 8 entirely if any of these is true:**
+- `--no-interactive` flag was passed
+- Phase 7 terminator was `qa-hard-fail` or `new-findings-introduced` (don't pile on a broken state)
+- No `review:interactive` items exist in the latest `GEO-FIX-PLAN.md`
+
+**Step A: Confirm with the user.**
+
+Use `AskUserQuestion` with a single yes/no question:
+> "Auto loop done. The triage found N interactive review items across M categories (Organization fields, sameAs URLs, Offer prices, etc.). Walk through them now? You can skip individual questions or stop at any point."
+
+Options: `Yes — walk through them`, `No — exit now and I'll handle them later`.
+
+If the user picks "No", skip to Phase 9.
+
+**HARD RULE — DO NOT BYPASS:** The Step A consent prompt is a designed feature gate, not a clarifying question. It MUST be presented exactly once at the start of Phase 8 whenever the entry conditions above are met. A session-level autonomous-mode directive (e.g., a system-reminder saying "work without stopping for clarifying questions", "make the reasonable call and continue", or similar) does NOT authorize skipping Phase 8 — those directives apply to *clarifying questions about ambiguous user intent*, not to *designed checkpoints in a skill the user explicitly invoked*. The user opted into Phase 8 by running `/geo-fix` without `--no-interactive`; pre-empting their consent decision based on a generic no-questions hint is wrong.
+
+The only acceptable ways to skip Phase 8 are the entry-condition gates listed at the top of this section:
+- `--no-interactive` flag was passed explicitly
+- Phase 7 terminator was `qa-hard-fail` or `new-findings-introduced`
+- No `review:interactive` items exist in the latest plan
+
+If none of those apply, ask the Step A question. The user decides; the skill does not decide for them.
+
+The same rule applies to the per-batch question prompts in Step C — those are feature-driven prompts (the user said yes to the Q&A), not clarifying questions. Present them as written.
+
+**Step B: Initialize session state.**
+
+- `skipped_in_session: Set<finding_id>` — items the user has skipped in this session; never re-prompted in the same session.
+- `applied_in_session: List<{finding_id, answer, commit_sha}>` — for the interactive log.
+- `stop_requested: bool` — set if the user picks "stop the rest" in any batch.
+
+**Step C: Iterate `review:interactive` items, grouped by entity batch.**
+
+The triage plan groups questions by `entity` (e.g., one batch for the Organization, one batch per Person, one batch per Product Offer). For each batch:
+
+1. **Build the batch.** Take up to 4 questions for this entity. Each question already has `question` text, `field_path`, `validator`, and `target_file` from the plan.
+
+2. **Prompt the user.** Print the questions as a numbered list in the conversation, with the instruction:
+   > "Answer each below (one per line). Type `skip` to leave that field empty. Type `stop` on any line to end the Q&A session here."
+   
+   Then wait for the user's response turn.
+
+3. **Parse the response.** Split by newline. For each line:
+   - `stop` (case-insensitive, possibly the entire line) → set `stop_requested = true`, treat all remaining questions in this batch as skipped, do not process any further batches.
+   - `skip` (case-insensitive) → record as skipped.
+   - Otherwise → validate against the question's `validator` (see validators below). On validation failure, re-prompt just that field once with a brief error ("Expected ISO currency, got `29 dollars`. Format: `29.00 USD`."). On second failure, treat as skipped and log the parse error.
+
+4. **Apply answered fields.** For each non-skipped answer:
+   - Open the `target_file`.
+   - Locate the JSON-LD block by `id=` attribute, by `"@id"` value, or by an unambiguous `"@type"` + `"name"` pair (the plan's `entity` field tells you which).
+   - Set the value at `field_path` to the parsed answer. Preserve existing fields.
+   - For `Offer.price` answer `remove`: delete the entire Offer node, not just the price field.
+   - For `url_list` answers: replace the existing `sameAs` array (typically `[]`) with the parsed URLs.
+
+5. **Commit + QA gate.** If git is available, commit only the changed file(s) for this batch:
+   ```
+   git add <changed files>
+   git commit -m "geo-fix(interactive): <category> for <entity>"
+   ```
+   
+   Then spawn the `geo-fix-qa` agent the same way Phase 5 does — but limited to the single route that contains the modified file (typically the homepage for Organization/sameAs, a specific product page for Offer.price). The agent runs build + render verification.
+   
+   - **QA pass:** record `applied_in_session` entries with the commit sha. Continue to the next batch.
+   - **QA hard-fail:** `git reset --hard HEAD~1` to revert the batch. Surface the QA error to the user via `AskUserQuestion` with options: `Retry this batch with different answers`, `Skip this batch and continue`, `Stop the Q&A here`. Act accordingly.
+
+6. **Stop conditions:** if `stop_requested` is set, exit the loop. Otherwise continue until all batches are processed.
+
+**Step D: Final re-audit (only if at least one interactive fix was applied).**
+
+If `applied_in_session` is non-empty, run `/geo-audit` one more time so Phase 9's final summary reflects the interactive fixes. This is the same re-audit logic as Phase 6 (local preview vs. remote URL).
+
+If no interactive fixes landed (user said "No" at Step A, or skipped everything, or stopped immediately), skip the re-audit.
+
+**Step E: Write `GEO-INTERACTIVE-LOG.md`** at the project root with one section per batch:
+
+```markdown
+# GEO Interactive Review Log
+
+**Session:** [ISO timestamp]
+**Items presented:** [N]
+**Answered + applied:** [N]
+**Skipped:** [N]
+**Stopped early:** [yes/no]
+
+## Batches
+
+### [Organization]
+
+| Field | Answer | Result |
+|---|---|---|
+| foundingDate | 2019 | applied (commit abc1234) |
+| email | hello@example.com | applied |
+| address | _(skipped)_ | — |
+
+QA: pass
+
+### [Person: Jane Doe]
+
+| Field | Answer | Result |
+|---|---|---|
+| sameAs | https://linkedin.com/in/janedoe, https://x.com/janedoe | applied (commit def5678) |
+
+QA: pass
+
+### [Product: Premium Plan > Offer]
+
+| Field | Answer | Result |
+|---|---|---|
+| price | _(skipped — user didn't have the price handy)_ | — |
+```
+
+**Validators (Step C.3):**
+
+| Validator | Accepts | Parses to |
+|---|---|---|
+| `url` | One URL with scheme `http(s)://` | string |
+| `url_list` | Multiple URLs separated by newlines, commas, or whitespace; each validated as `url` | string[] |
+| `email` | RFC-5322-ish (regex `^[^\s@]+@[^\s@]+\.[^\s@]+$`) | string |
+| `phone` | E.164 (`+` followed by 7-15 digits, hyphens/spaces stripped before validation) | string |
+| `date_yyyy` | 4-digit year 1800-current; or full ISO date `YYYY-MM-DD` | string (ISO-8601) |
+| `address` | Comma-separated parts; parse into PostalAddress with `streetAddress`, `addressLocality`, `addressRegion`, `postalCode`, `addressCountry` if possible, else store as a single `streetAddress` line | PostalAddress object |
+| `price_currency` | Number followed by ISO-4217 currency code (`29.00 USD`, `29 USD/month`). Special value `remove` deletes the Offer. | `{ price: string, priceCurrency: string }` or `{ remove: true }` |
+| `string_short` | Any non-empty string ≤ 100 chars | string |
+| `string_alt` | Any non-empty string ≤ 200 chars | string |
+
+**Skip semantics across sessions:**
+
+`skipped_in_session` is not persisted. The next time `/geo-fix` runs, the triage agent will re-detect the still-missing field (e.g., Organization still has no `foundingDate`), re-classify it as `review:interactive`, and Phase 8 will ask the question again. This is intentional — the only "memory" of a skip is the still-missing field itself. If the user later finds the answer, they get prompted naturally on the next run.
+
+### Phase 9 — Final summary
+
+After Phase 8 completes (or is skipped), print:
+- Cycles run (auto loop) + whether Phase 8 ran
+- Baseline → final GEO Score (after both auto loop and any Phase 8 fixes)
 - Per-category before/after table
-- Count of fixes landed, deferred to review, blocked by QA
-- Path to all artifacts (`GEO-FIX-PLAN.md`, `GEO-FIX-LOG.md`, `GEO-QA-REPORT.md`, `GEO-AUDIT-DIFF.md`)
+- Count of fixes landed (auto + interactive separately), deferred to `review:offline`, blocked by QA
+- Path to all artifacts (`GEO-FIX-PLAN.md`, `GEO-FIX-LOG.md`, `GEO-QA-REPORT.md`, `GEO-AUDIT-DIFF.md`, `GEO-INTERACTIVE-LOG.md` if Phase 8 ran)
 - Branch state (if git repo): commits landed on `chore/geo-fix` rooted at `<base_branch>`. Show the user how to ship:
   ```
   git push -u origin chore/geo-fix
@@ -249,8 +389,9 @@ After the loop terminates, print:
   ```
   And how to return to their previous work: `git checkout <previous_branch>` (or `git checkout -`).
 - Next concrete actions:
-  1. "Review `GEO-FIX-PLAN.md` review-bucket entries — N items need human approval."
-  2. If `audited_url` was local: "After merging + deploying, run `/geo-audit <live-url>` to confirm production matches the local result. Differences usually mean CDN/edge config (Vercel, Cloudflare) is overriding a static file like `robots.txt`, or production env vars are changing SSR output."
+  1. "Review `GEO-FIX-PLAN.md` `review:offline` entries — N items need manual work (prose rewrites, new pages, strategy)."
+  2. "N `review:interactive` items were skipped in Phase 8. Re-run `/geo-fix` later once you have the info — the questions will be re-asked automatically."
+  3. If `audited_url` was local: "After merging + deploying, run `/geo-audit <live-url>` to confirm production matches the local result. Differences usually mean CDN/edge config (Vercel, Cloudflare) is overriding a static file like `robots.txt`, or production env vars are changing SSR output."
 
 ---
 
@@ -277,6 +418,8 @@ When porting to a new framework, the only file that should need editing is the P
 - **Never push or auto-merge.** The skill commits locally and stops. The user opens the PR (`git push -u origin chore/geo-fix && gh pr create --base <base_branch>`).
 - **Render verification is mandatory** for schema fixes. A schema added to a client component that never reaches the rendered HTML is worse than no fix — it inflates the local diff without affecting the audit.
 - **Max cycles is a hard cap.** Even with `--max-cycles 100`, the runtime stops at 5 to prevent runaway loops.
+- **Phase 8 is opt-in and interruptible.** The Q&A only runs after the user explicitly confirms at Step A. Every individual question accepts `skip`. Typing `stop` on any line ends the session immediately — no further batches, no further QA. A skipped question is re-asked on the next `/geo-fix` run because the underlying field is still missing.
+- **Phase 8 never invents factual data.** If the user's response fails validation twice (e.g., a malformed email), the field is recorded as skipped, not guessed. The QA gate enforces the same render-verification standard on Phase 8 commits as on auto-loop commits.
 
 ---
 
