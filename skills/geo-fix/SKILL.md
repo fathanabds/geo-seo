@@ -299,26 +299,58 @@ The triage plan groups questions by `entity` (e.g., one batch for the Organizati
    - For `Offer.price` answer `remove`: delete the entire Offer node, not just the price field.
    - For `url_list` answers: replace the existing `sameAs` array (typically `[]`) with the parsed URLs.
 
-5. **Commit + QA gate.** If git is available, commit only the changed file(s) for this batch:
+5. **Pre-commit validation (always run — cheap).** Before committing the batch:
+   - If the batch edited a JSON-LD block: `JSON.parse()` the edited block. On throw, treat the batch as a parse failure — `git checkout -- <file>` to discard the unstaged change, prompt the user via `AskUserQuestion` with options `Retry this batch with different answers`, `Skip this batch and continue`, `Stop the Q&A here`. Do not commit.
+   - If the batch wrote a new file (e.g., `public/og-image.png`): confirm the file exists at the expected path with non-zero size. On failure, same retry/skip/stop prompt.
+   - All other batches: no extra validation here — they go straight to commit.
+
+6. **Commit.** If validation passed and git is available, commit only the changed file(s) for this batch:
    ```
    git add <changed files>
    git commit -m "geo-fix(interactive): <category> for <entity>"
    ```
-   
-   Then spawn the `geo-fix-qa` agent the same way Phase 5 does — but limited to the single route that contains the modified file (typically the homepage for Organization/sameAs, a specific product page for Offer.price). The agent runs build + render verification.
-   
-   - **QA pass:** record `applied_in_session` entries with the commit sha. Continue to the next batch.
-   - **QA hard-fail:** `git reset --hard HEAD~1` to revert the batch. Surface the QA error to the user via `AskUserQuestion` with options: `Retry this batch with different answers`, `Skip this batch and continue`, `Stop the Q&A here`. Act accordingly.
 
-6. **Stop conditions:** if `stop_requested` is set, exit the loop. Otherwise continue until all batches are processed.
+7. **QA decision — fast-path eligibility check.** Determine whether this batch can defer full QA to the consolidated gate at Step D, or whether it needs a per-batch QA run. A batch is **fast-path eligible** ONLY if ALL of the following are true:
 
-**Step D: Final re-audit (only if at least one interactive fix was applied).**
+   | # | Condition | Why |
+   |---|---|---|
+   | 1 | Exactly one file modified, optionally plus one *new* file under `public/` or `static/` | Multi-file edits are more likely to cross-interact |
+   | 2 | The modified file is in the fast-path allowlist (see below) | Static/declarative files have predictable build effects |
+   | 3 | No `package.json`, lockfile, or build-config file touched (`vite.config.*`, `next.config.*`, `nuxt.config.*`, `astro.config.*`, `svelte.config.*`) | These change build behavior and need full QA |
+   | 4 | The change is purely additive: adding JSON-LD fields, adding `sameAs` URLs, adding new static assets, adding config entries. NEVER deleting existing fields or code paths | Deletions can silently break consumers |
+   | 5 | JSON-LD edits passed the `JSON.parse()` check in Step 5 | Syntax errors are caught inline, not deferred |
 
-If `applied_in_session` is non-empty, run `/geo-audit` one more time so Phase 9's final summary reflects the interactive fixes. This is the same re-audit logic as Phase 6 (local preview vs. remote URL).
+   **Fast-path file allowlist:**
+   - The framework's static entry HTML: `index.html`, `src/app.html`, `app/layout.tsx` (when the edit is purely additive JSON-LD), `pages/_document.tsx` (same constraint)
+   - Anything under `public/` or `static/`
+   - `src/config/seo.ts` or equivalent declarative config under `src/config/` or `src/data/`
+   - `nuxt.config.ts` *only* for additive `app.head.script` / `app.head.meta` entries (read carefully — this file is also a build config, so for non-additive edits it's NOT eligible)
 
-If no interactive fixes landed (user said "No" at Step A, or skipped everything, or stopped immediately), skip the re-audit.
+   - **Fast-path eligible:** record the batch as `{qa_mode: "deferred", route: <affected_route>}` in `applied_in_session`. Continue to next batch — do NOT run `geo-fix-qa` now.
+   - **NOT eligible:** spawn the `geo-fix-qa` agent the same way Phase 5 does, limited to the single affected route. On pass: record `qa_mode: "strict-passed"` and continue. On hard-fail: `git reset --hard HEAD~1`, prompt via `AskUserQuestion` (`Retry / Skip / Stop`), act accordingly.
 
-**Step E: Write `GEO-INTERACTIVE-LOG.md`** at the project root with one section per batch:
+8. **Stop conditions:** if `stop_requested` is set, exit the loop. Otherwise continue until all batches are processed.
+
+**Step D: Consolidated final QA gate (only if any batch was fast-path-deferred).**
+
+If `applied_in_session` contains any entry with `qa_mode: "deferred"`, run `geo-fix-qa` ONCE across all routes affected by the deferred batches. This is the consolidated safety net — it catches build breakage, cross-file interactions, and render-verification failures that per-batch JSON-validation could not see.
+
+- **Pass:** all deferred batches are now QA-verified. Continue to Step E.
+- **Hard-fail:** the consolidated QA caught something inline validation missed (e.g., a `sameAs` URL caused a CSP violation, a new JSON-LD entity collided with an existing `@id`, a static asset is the wrong size). Do NOT auto-revert — these commits represent user-supplied answers and the user may want to investigate or keep them. Surface the QA report and prompt via `AskUserQuestion`:
+  - `Auto-revert all Phase 8 commits (clean slate)` → `git reset --hard <ref-before-phase-8>`, log the reverts, skip to Phase 9.
+  - `Leave commits, skip the final re-audit` → keep the commits; mark Phase 8 final QA as failed in the log; skip Step E; go to Phase 9.
+  - `Stop and let me investigate manually` → exit the skill, leave everything as-is.
+- **Soft-fail:** log but continue to Step E.
+
+If no batches were fast-path-deferred (all batches ran strict per-batch QA), skip this step — there's nothing left to verify.
+
+**Step E: Final re-audit (only if at least one interactive fix landed AND Step D did not fail).**
+
+If `applied_in_session` is non-empty and Step D either passed or was skipped (no deferred batches), run `/geo-audit` one more time so Phase 9's final summary reflects the interactive fixes. This is the same re-audit logic as Phase 6 (local preview vs. remote URL).
+
+If no interactive fixes landed (user said "No" at Step A, or skipped everything, or stopped immediately), or if Step D's final QA hard-failed and the user chose "Leave commits, skip the final re-audit", skip this step.
+
+**Step F: Write `GEO-INTERACTIVE-LOG.md`** at the project root with one section per batch:
 
 ```markdown
 # GEO Interactive Review Log
@@ -328,6 +360,9 @@ If no interactive fixes landed (user said "No" at Step A, or skipped everything,
 **Answered + applied:** [N]
 **Skipped:** [N]
 **Stopped early:** [yes/no]
+**QA mode:** [strict-all / mixed / fast-path-all]
+**Per-batch QA runs:** [N strict] / [M deferred to consolidated]
+**Consolidated final QA:** [pass / hard-fail / soft-fail / skipped (no deferred batches)]
 
 ## Batches
 
@@ -339,7 +374,7 @@ If no interactive fixes landed (user said "No" at Step A, or skipped everything,
 | email | hello@example.com | applied |
 | address | _(skipped)_ | — |
 
-QA: pass
+QA: deferred to consolidated final gate (fast-path: single file `index.html`, additive JSON-LD)
 
 ### [Person: Jane Doe]
 
@@ -347,13 +382,28 @@ QA: pass
 |---|---|---|
 | sameAs | https://linkedin.com/in/janedoe, https://x.com/janedoe | applied (commit def5678) |
 
-QA: pass
+QA: deferred to consolidated final gate
 
 ### [Product: Premium Plan > Offer]
 
 | Field | Answer | Result |
 |---|---|---|
 | price | _(skipped — user didn't have the price handy)_ | — |
+
+### [Build config update — vite.config.ts manualChunks]
+
+| Field | Answer | Result |
+|---|---|---|
+| chunks | react-vendor, firebase | applied (commit ghi9abc) |
+
+QA: strict (per-batch — modified build config, not fast-path eligible). build OK, render-verified.
+
+## Consolidated final QA
+
+Build: pass
+Smoke routes tested: 3
+Render verification: 12/12 signatures present in served HTML
+Status: pass
 ```
 
 **Validators (Step C.3):**
@@ -420,6 +470,7 @@ When porting to a new framework, the only file that should need editing is the P
 - **Max cycles is a hard cap.** Even with `--max-cycles 100`, the runtime stops at 5 to prevent runaway loops.
 - **Phase 8 is opt-in and interruptible.** The Q&A only runs after the user explicitly confirms at Step A. Every individual question accepts `skip`. Typing `stop` on any line ends the session immediately — no further batches, no further QA. A skipped question is re-asked on the next `/geo-fix` run because the underlying field is still missing.
 - **Phase 8 never invents factual data.** If the user's response fails validation twice (e.g., a malformed email), the field is recorded as skipped, not guessed. The QA gate enforces the same render-verification standard on Phase 8 commits as on auto-loop commits.
+- **Fast-path QA is documented, not silent.** Step C.7 defines explicit eligibility criteria (single static file, no build-config touched, additive only, JSON-LD parses inline). Eligible batches skip per-batch full QA and defer to the Step D consolidated final QA. The decision is recorded per batch in `GEO-INTERACTIVE-LOG.md` (`qa_mode: deferred|strict-passed`). A batch that doesn't meet all 5 conditions runs full per-batch QA — no exceptions. The orchestrator does NOT have authority to expand the allowlist or relax the conditions at runtime; if the model thinks a batch is "obviously safe" but it fails an eligibility check, run strict QA anyway.
 
 ---
 
