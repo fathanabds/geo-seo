@@ -73,7 +73,39 @@ Each cycle writes artifacts to the project root:
 3. Extract `audited_url` from the report header (`**URL:** <url>` line). Classify it:
    - **Local** if the host is `localhost` or `127.0.0.1` — the inner loop will re-audit this URL via `/geo-audit`'s auto-preview mode, which rebuilds the project on each cycle.
    - **Remote** otherwise — the inner loop re-audits the live URL each cycle. Fixes won't register until the user deploys, so the loop will likely plateau after one cycle. Warn the user and offer to switch to the recommended local-preview flow.
-4. Verify the project is a git repo (`git rev-parse --git-dir`). If not, warn the user; commits-per-category will be skipped and a single diff will be produced instead.
+4. **Git readiness.** If `git rev-parse --git-dir` fails, warn the user; commits-per-category and the branch-switch step are skipped, and a single diff will be produced instead. Otherwise (git repo):
+
+   **a. Detect base branch.** Run `git symbolic-ref refs/remotes/origin/HEAD 2>/dev/null` and strip the `refs/remotes/origin/` prefix to get `base_branch` (typically `main` or `master`). If that fails, fall back in order: local `main`, then local `master`. If neither exists, exit with: `Cannot determine base branch. Set origin/HEAD or create a main/master branch.`
+
+   **b. Fetch latest.** If a remote is configured (`git remote` returns non-empty), run `git fetch origin <base_branch>` with a 30-second timeout. On failure or no remote, warn `No remote configured — proceeding with local <base_branch>. Code may be stale.` and continue. Determine the base ref to use going forward: `origin/<base_branch>` if fetch succeeded, else local `<base_branch>`.
+
+   **c. Dirty-tree check (excludes our own artifacts).** Run:
+   ```bash
+   git status --porcelain -- ':(exclude)GEO-*.md'
+   ```
+   If output is non-empty, **exit immediately with no further actions**. Print exactly this message and stop the skill:
+   ```
+   Working tree has uncommitted changes (excluding GEO-* artifacts):
+   <list of files>
+
+   Resolve these manually before re-running /geo-fix:
+     - git stash push -m "pre-geo-fix" -- <files>   (to set aside)
+     - git commit -m "..." <files>                  (to keep on current branch)
+     - git checkout -- <files>                      (to discard)
+
+   /geo-fix must not modify your working tree to satisfy this check.
+   ```
+
+   **HARD RULE — DO NOT BYPASS:** the skill MUST NOT auto-stash, auto-commit, auto-revert, or in any way modify the user's working tree to clear this state. Even if the change appears trivial (e.g., a one-line cosmetic tweak), even if it appears unrelated to GEO, even if the user previously ran with similar changes — the only acceptable response is to print the refusal message and stop. The user's working tree is theirs to manage. Auto-stashing silently relocates user work to a list (`git stash list`) where it can be forgotten, which is worse than refusing outright.
+
+   This check excludes `GEO-AUDIT-REPORT.md`, `GEO-AUDIT-REPORT.cycle-*.md`, `GEO-FIX-PLAN.md`, `GEO-FIX-LOG.md`, `GEO-QA-REPORT.md`, and `GEO-AUDIT-DIFF.md` — they're skill outputs, not user changes.
+
+   **d. Switch to `chore/geo-fix`.** Capture `previous_branch = $(git rev-parse --abbrev-ref HEAD)` first for the final summary. Then:
+   - If branch does not exist (`git show-ref --verify --quiet refs/heads/chore/geo-fix` fails): create it from the base ref. `git checkout -b chore/geo-fix <base_ref>`.
+   - If branch exists: `git checkout chore/geo-fix`, then `git rebase <base_ref>` to bring it up to date with the current base. On rebase conflict, abort the rebase and refuse with: `chore/geo-fix has commits that conflict with <base_branch>. Resolve manually or delete the branch (git branch -D chore/geo-fix) and re-run.`
+
+   This always roots `chore/geo-fix` at the latest base. Feature work on other branches is untouched.
+
 5. Capture baseline GEO Score from the report's Executive Summary table — store as `baseline_score`.
 
 ### Phase 1 — Framework Detection (run once, cached)
@@ -210,6 +242,12 @@ After the loop terminates, print:
 - Per-category before/after table
 - Count of fixes landed, deferred to review, blocked by QA
 - Path to all artifacts (`GEO-FIX-PLAN.md`, `GEO-FIX-LOG.md`, `GEO-QA-REPORT.md`, `GEO-AUDIT-DIFF.md`)
+- Branch state (if git repo): commits landed on `chore/geo-fix` rooted at `<base_branch>`. Show the user how to ship:
+  ```
+  git push -u origin chore/geo-fix
+  gh pr create --base <base_branch>
+  ```
+  And how to return to their previous work: `git checkout <previous_branch>` (or `git checkout -`).
 - Next concrete actions:
   1. "Review `GEO-FIX-PLAN.md` review-bucket entries — N items need human approval."
   2. If `audited_url` was local: "After merging + deploying, run `/geo-audit <live-url>` to confirm production matches the local result. Differences usually mean CDN/edge config (Vercel, Cloudflare) is overriding a static file like `robots.txt`, or production env vars are changing SSR output."
@@ -231,10 +269,12 @@ When porting to a new framework, the only file that should need editing is the P
 
 ## Quality Gates and Safety
 
-- **Always operate on a clean working tree.** If `git status` shows uncommitted changes at start, stop and ask the user to commit or stash. Mixing user work with auto-fixes makes reverts ambiguous.
+- **Always operate on a clean working tree.** The dirty-tree check in Phase 0 excludes the skill's own artifacts (`GEO-*.md` files) but refuses on any other uncommitted changes. Mixing user work with auto-fixes makes reverts ambiguous.
+- **Always commit on `chore/geo-fix`, never on a base branch.** Phase 0 enforces this by switching to `chore/geo-fix` (rooted at the latest base) before any edits. The user's previous branch is untouched and they can return with `git checkout -` after the run.
 - **One category per commit.** Never bundle schema + meta + robots into a single commit — it makes the QA report unreadable when something breaks.
 - **Never delete files** in the auto bucket. Removing deprecated schemas means deleting `<script type="application/ld+json">` blocks, not files.
 - **Never modify package.json or lockfiles** in the auto bucket. Dependency changes always go to review.
+- **Never push or auto-merge.** The skill commits locally and stops. The user opens the PR (`git push -u origin chore/geo-fix && gh pr create --base <base_branch>`).
 - **Render verification is mandatory** for schema fixes. A schema added to a client component that never reaches the rendered HTML is worse than no fix — it inflates the local diff without affecting the audit.
 - **Max cycles is a hard cap.** Even with `--max-cycles 100`, the runtime stops at 5 to prevent runaway loops.
 

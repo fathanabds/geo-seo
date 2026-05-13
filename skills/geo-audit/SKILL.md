@@ -64,15 +64,29 @@ Use the lockfile to pick the right package manager: `pnpm-lock.yaml` → `pnpm`,
 - If it responds with a 200 to `GET /` → assume it's our own preview from a previous run, use it as-is, do NOT rebuild or restart.
 - If it responds with anything else (or unknown server) → pick the next free port (4189, 4190, ...) up to 4199.
 
-**Step C: Build.** Run the build command from CWD. Capture output. On non-zero exit, surface the build error and abort the audit — auditing a broken build is meaningless.
+**Step C: Pre-build safety check.** Before running any build command, scan `package.json`'s `scripts.build` (and any npm scripts it transitively references, max 3 levels deep) for verbs that indicate the build has side effects beyond the local filesystem.
 
-**Step D: Start preview in background.** Spawn the serve command with output redirected to a log file. Capture PID. Register a cleanup hook to kill PID on exit (success or failure).
+- **Risky verbs (whole-word match):** `deploy`, `publish`, `release`, `upload`, `push`, `notify`, `send`, `sync`, `rsync`, `scp`.
+- **Risky tool patterns:** `vercel deploy`, `netlify deploy`, `firebase deploy`, `npm publish`, `gh release`, `semantic-release`, `aws s3 cp`, `gcloud `.
+- **Transitive resolution:** when a script's command contains `npm run <name>`, `pnpm run <name>`, `yarn run <name>`, or `yarn <name>`, read `scripts.<name>` and recurse. Track visited names to avoid cycles. Depth ≤ 3.
 
-**Step E: Wait for ready.** Poll `http://localhost:<port>/` for up to 15 seconds. If no 200 response within that window, kill the PID and abort with: `Preview server failed to start. Check build output.`
+If any risky verb or pattern is found and the environment variable `GEO_FIX_ALLOW_RISKY_BUILD` is unset (or empty), refuse with:
+```
+Build script contains risky verb '<verb>' in scripts.<name>: <command>
+Running it could have real-world side effects (deploys, publishes, uploads).
+Set GEO_FIX_ALLOW_RISKY_BUILD=1 to override.
+```
+The user can rerun with `GEO_FIX_ALLOW_RISKY_BUILD=1 /geo-audit` to bypass after confirming the script is safe. If `GEO_FIX_ALLOW_RISKY_BUILD=1`, skip this check entirely.
 
-**Step F: Set `audit_url = http://localhost:<port>`** and proceed to Phase 1.
+**Step D: Build.** Run the build command from CWD. Capture output. On non-zero exit, surface the build error and abort the audit — auditing a broken build is meaningless.
 
-**Step G (on completion):** Kill the preview server PID. Use `kill -TERM` then `kill -KILL` after 2s. Delete the log file.
+**Step E: Start preview in background.** Spawn the serve command with output redirected to a log file. Capture PID. Register a cleanup hook to kill PID on exit (success or failure).
+
+**Step F: Wait for ready.** Poll `http://localhost:<port>/` for up to 15 seconds. If no 200 response within that window, kill the PID and abort with: `Preview server failed to start. Check build output.`
+
+**Step G: Set `audit_url = http://localhost:<port>`** and proceed to Phase 1.
+
+**Step H (on completion):** Kill the preview server PID. Use `kill -TERM` then `kill -KILL` after 2s. Delete the log file.
 
 ### Phase 1: Discovery and Reconnaissance
 

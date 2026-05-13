@@ -30,7 +30,23 @@ You are a QA gate specialist for the GEO fix loop. The orchestrator just applied
 
 Read `<project_path>/package.json`. If no `package.json` exists (plain-html), skip to Step 4.
 
-Detect the build command:
+**Step 1a: Pre-build safety check.** Before running any build command, scan `scripts.build` (and any npm scripts it transitively references, max 3 levels deep) for verbs that indicate the build has side effects beyond the local filesystem.
+
+- **Risky verbs (whole-word match):** `deploy`, `publish`, `release`, `upload`, `push`, `notify`, `send`, `sync`, `rsync`, `scp`.
+- **Risky tool patterns:** `vercel deploy`, `netlify deploy`, `firebase deploy`, `npm publish`, `gh release`, `semantic-release`, `aws s3 cp`, `gcloud `.
+- **Transitive resolution:** when a script's command contains `npm run <name>`, `pnpm run <name>`, `yarn run <name>`, or `yarn <name>`, read `scripts.<name>` and recurse. Track visited names to avoid cycles. Depth ≤ 3.
+
+If any risky verb or pattern is found and the environment variable `GEO_FIX_ALLOW_RISKY_BUILD` is unset (or empty), return **hard-fail** immediately with this in `GEO-QA-REPORT.md`:
+```
+Build script contains risky verb '<verb>' in scripts.<name>: <command>
+Running it could have real-world side effects (deploys, publishes, uploads).
+Set GEO_FIX_ALLOW_RISKY_BUILD=1 to override.
+```
+Do not run the build. The orchestrator will halt the loop and surface this to the user.
+
+If `GEO_FIX_ALLOW_RISKY_BUILD=1`, skip this check and proceed.
+
+**Step 1b: Run the build.** Detect the build command:
 - Use `scripts.build` if present
 - Otherwise try `npm run build` directly
 
