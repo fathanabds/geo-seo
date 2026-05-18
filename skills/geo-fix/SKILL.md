@@ -1,6 +1,6 @@
 ---
 name: geo-fix
-description: Closed-loop GEO remediation. Consumes a GEO-AUDIT-REPORT.md, triages findings into auto/review/skip buckets (review further split into interactive vs offline), applies framework-aware auto-fixes, runs a build + Playwright smoke + render-verification QA gate, re-audits, writes a score-delta diff. Loops until no auto fixes remain or scores plateau, then walks the user through an opt-in Q&A for interactive-review items (missing schema fields, sameAs URLs, Offer prices, addresses). Works on any project — Next.js, Vite/React, Astro, Nuxt, SvelteKit, plain HTML.
+description: Closed-loop GEO remediation. Consumes a GEO-AUDIT-REPORT.md, triages findings into auto/review/skip buckets (review further split into interactive vs offline), applies framework-aware auto-fixes, runs a build + Playwright smoke + render-verification QA gate, re-audits, writes a score-delta diff. Loops until no auto fixes remain or scores plateau, then walks the user through an opt-in Q&A for interactive-review items (missing schema fields, sameAs URLs, Offer prices, addresses), and finally emits GEO-FIX-TODO.md — a prioritized, self-contained playbook for everything still unresolved. Works on any project — Next.js, Vite/React, Astro, Nuxt, SvelteKit, plain HTML.
 allowed-tools:
   - Read
   - Edit
@@ -68,6 +68,7 @@ Each cycle writes artifacts to the project root:
 | `GEO-QA-REPORT.md` | Phase 5 (QA gate) | Build/smoke/render results |
 | `GEO-AUDIT-DIFF.md` | Phase 7 (diff) | Score deltas, fixes landed, fixes deferred |
 | `GEO-INTERACTIVE-LOG.md` | Phase 8 (Q&A) | Per-question answers, skips, applied changes, QA results |
+| `GEO-FIX-TODO.md` | Phase 9 (summary) | Self-contained per-item playbook for everything still unresolved — the user-facing handoff doc |
 
 ---
 
@@ -103,7 +104,7 @@ Each cycle writes artifacts to the project root:
 
    **HARD RULE — DO NOT BYPASS:** the skill MUST NOT auto-stash, auto-commit, auto-revert, or in any way modify the user's working tree to clear this state. Even if the change appears trivial (e.g., a one-line cosmetic tweak), even if it appears unrelated to GEO, even if the user previously ran with similar changes — the only acceptable response is to print the refusal message and stop. The user's working tree is theirs to manage. Auto-stashing silently relocates user work to a list (`git stash list`) where it can be forgotten, which is worse than refusing outright.
 
-   This check excludes `GEO-AUDIT-REPORT.md`, `GEO-AUDIT-REPORT.cycle-*.md`, `GEO-FIX-PLAN.md`, `GEO-FIX-LOG.md`, `GEO-QA-REPORT.md`, and `GEO-AUDIT-DIFF.md` — they're skill outputs, not user changes.
+   This check excludes `GEO-AUDIT-REPORT.md`, `GEO-AUDIT-REPORT.cycle-*.md`, `GEO-FIX-PLAN.md`, `GEO-FIX-LOG.md`, `GEO-QA-REPORT.md`, `GEO-AUDIT-DIFF.md`, `GEO-INTERACTIVE-LOG.md`, and `GEO-FIX-TODO.md` — they're skill outputs, not user changes. (All match the `GEO-*.md` exclude glob; they're listed explicitly so a reader knows the full set.)
 
    **d. Switch to `chore/geo-fix`.** Capture `previous_branch = $(git rev-parse --abbrev-ref HEAD)` first for the final summary. Then:
    - If branch does not exist (`git show-ref --verify --quiet refs/heads/chore/geo-fix` fails): create it from the base ref. `git checkout -b chore/geo-fix <base_ref>`.
@@ -431,7 +432,7 @@ After Phase 8 completes (or is skipped), print:
 - Baseline → final GEO Score (after both auto loop and any Phase 8 fixes)
 - Per-category before/after table
 - Count of fixes landed (auto + interactive separately), deferred to `review:offline`, blocked by QA
-- Path to all artifacts (`GEO-FIX-PLAN.md`, `GEO-FIX-LOG.md`, `GEO-QA-REPORT.md`, `GEO-AUDIT-DIFF.md`, `GEO-INTERACTIVE-LOG.md` if Phase 8 ran)
+- Path to all artifacts (`GEO-FIX-PLAN.md`, `GEO-FIX-LOG.md`, `GEO-QA-REPORT.md`, `GEO-AUDIT-DIFF.md`, `GEO-INTERACTIVE-LOG.md` if Phase 8 ran, and `GEO-FIX-TODO.md` — point the user here first)
 - Branch state (if git repo): commits landed on `chore/geo-fix` rooted at `<base_branch>`. Show the user how to ship:
   ```
   git push -u origin chore/geo-fix
@@ -439,9 +440,74 @@ After Phase 8 completes (or is skipped), print:
   ```
   And how to return to their previous work: `git checkout <previous_branch>` (or `git checkout -`).
 - Next concrete actions:
-  1. "Review `GEO-FIX-PLAN.md` `review:offline` entries — N items need manual work (prose rewrites, new pages, strategy)."
+  1. "Review `GEO-FIX-TODO.md` — the consolidated, prioritized playbook for everything still unresolved."
   2. "N `review:interactive` items were skipped in Phase 8. Re-run `/geo-fix` later once you have the info — the questions will be re-asked automatically."
   3. If `audited_url` was local: "After merging + deploying, run `/geo-audit <live-url>` to confirm production matches the local result. Differences usually mean CDN/edge config (Vercel, Cloudflare) is overriding a static file like `robots.txt`, or production env vars are changing SSR output."
+
+**Generate `GEO-FIX-TODO.md` — the user handoff playbook.**
+
+This is the single document the user works from after the skill exits. Overwrite it every run (it is a regenerated snapshot of current state, not an append log — manual edits to it are lost on the next run; this is intentional).
+
+Aggregate every still-unresolved item from these sources, deduplicated:
+
+| Source | What to pull |
+|---|---|
+| `GEO-INTERACTIVE-LOG.md` | Batches/fields the user skipped in Phase 8 (full skips + partial skips) |
+| `GEO-FIX-PLAN.md` | All `review:offline` items; all `skip` items (off-site + architectural); any `auto` items that failed to apply (downgraded to review) |
+| `GEO-AUDIT-DIFF.md` | "New findings introduced" this run (side effects the user must verify — e.g., placeholder assets, flagged-for-verification URLs) |
+
+**Prioritize across sources, not within them.** Sort all items into a single ordered list by estimated score impact (derive the estimate from the per-category weighting and the cycle deltas in `GEO-AUDIT-DIFF.md` — e.g., an item that would lift Schema from 79→94 at 10% weight ≈ +1.5 overall; a `review:interactive` skip that needs one URL is near-zero effort for that lift). Effort-adjust: a high-impact item that needs only a pasted URL ranks above a high-impact item that needs an SSR migration.
+
+**Format — Option B, full self-contained playbook.** Each item must be actionable without opening any other file:
+
+```markdown
+# GEO Fix — TODO Playbook
+
+**Generated:** [ISO timestamp] (regenerated every `/geo-fix` run — do not hand-edit; edits are overwritten)
+**Current GEO Score:** [Y] / 100
+**Estimated ceiling if all TODO items resolved:** ~[Z] / 100
+**Items remaining:** [N] ([a] re-runnable via /geo-fix, [b] manual/offline, [c] off-site, [d] verify)
+
+## Do these first (highest impact ÷ effort)
+
+1. **[item title]** — est. +[X] overall · effort: [trivial/low/medium/high]
+
+---
+
+## 1. [Item title]
+
+- **Status bucket:** review:interactive (skipped in Phase 8) | review:offline | skip:architectural | skip:off-site | verify (new finding)
+- **Source finding:** [verbatim quote from GEO-AUDIT-REPORT.md]
+- **Why the skill didn't auto-fix it:** [the specific bucket rule — e.g., "asserts a factual claim about a real person", "requires prose > 30 words", "off-site, outside repo", "architectural — needs an engineering decision"]
+- **Estimated score impact:** +[X] overall ([category] [old]→[new] at [weight]%)
+- **Effort:** [trivial / low / medium / high] — [one-line why]
+- **Where:** `path/to/file.ext` [+ line/anchor if known] — or "off-site: [platform]"
+- **How to resolve:**
+  - If `review:interactive`: "Re-run `/geo-fix`, answer the prompt: _[the exact question]_. Have ready: [what the user needs to look up]."
+  - If `review:offline` (prose): a **starter draft** the user can edit — e.g., a schema-content JSON-LD block with the factual fields left as `[FILL: ...]`, or a meta-description draft, or a page skeleton. Make it copy-pasteable.
+  - If `skip:architectural`: the concrete migration step (e.g., "add `@prerenderer/rollup-plugin` to `vite.config.ts`; here is the minimal config block: ...").
+  - If `skip:off-site`: the checklist (e.g., "1. Create LinkedIn company page. 2. Add the URL to Organization.sameAs via the next `/geo-fix` run.").
+  - If `verify`: what to check and how (e.g., "Open `public/og-image.png` — it's a picsum placeholder. Replace with a 1200×630 branded asset.").
+- **Proposed commit message** (if it results in a code change): `[type](scope): ...`
+
+---
+
+## 2. [next item]
+
+[...same structure...]
+
+---
+
+## Off-site / non-repo (cannot be done in this codebase)
+
+[Compact list — title + one-line + which external system. Still ordered by impact, but grouped here because the user can't act on them from the editor.]
+
+## Already handed off to /geo-fix (will re-ask automatically)
+
+[The Phase-8-skipped review:interactive items, listed compactly with the one fact each needs. These need no manual editing — just a re-run.]
+```
+
+Keep `review:offline` starter drafts realistic but clearly marked with `[FILL: ...]` placeholders so the user never ships unverified facts. Never invent names, prices, dates, or credentials in a draft — that is the same rule the triage agent follows.
 
 ---
 
